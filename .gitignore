@@ -44,6 +44,10 @@ __pycache__/
 
 ### Data files ###
 *.xlsx
-!webapp/template.xlsx
+!template.xlsx
 month/
 generate_kaoqin.py
+pom.xml
+src/
+.idea/
+.mvn/
