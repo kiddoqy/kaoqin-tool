@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>考勤生成工具</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  .result-table { border-collapse: collapse; }
+  .result-table td, .result-table th { border: 1px solid #d1d5db; padding: 4px 6px; text-align: center; font-size: 13px; min-width: 44px; }
+  .result-table th { background: #d9e1f2; font-weight: bold; white-space: pre-line; }
+  .cell-late { background: #ffd7d7; }
+  .cell-miss { background: #ffe0b2; }
+  .cell-leave { background: #ffffcc; }
+  .cell-normal { color: #22c55e; font-weight: bold; }
+  .sticky-col { position: sticky; left: 0; background: #f8fafc; z-index: 2; }
+  #drop-zone.dragover { border-color: #3b82f6; background: #eff6ff; }
+  .loading { display: none; }
+  .htmx-indicator { display: none; }
+</style>
+</head>
+<body class="bg-gray-50 min-h-screen">
+
+<header class="bg-white shadow-sm border-b">
+  <div class="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between">
+    <h1 class="text-xl font-bold text-gray-800">考勤生成工具</h1>
+    <span class="text-sm text-gray-500">上传打卡记录 + 月报 → 生成考勤表</span>
+  </div>
+</header>
+
+<main class="max-w-7xl mx-auto px-4 py-6">
+
+  <!-- 上传区域 -->
+  <div id="upload-section" class="bg-white rounded-lg shadow p-6 mb-6">
+    <div class="grid grid-cols-2 gap-4 mb-4">
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-2">
+          打卡时间记录
+          <span class="text-red-500">*</span>
+        </label>
+        <label id="drop-zone" for="file-record"
+               class="flex flex-col items-center justify-center h-32 border-2 border-dashed border-gray-300 rounded-lg cursor-pointer hover:bg-gray-50 transition">
+          <svg class="w-8 h-8 text-gray-400 mb-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/>
+          </svg>
+          <span class="text-sm text-gray-500" id="record-label">点击或拖拽上传 .xlsx 文件</span>
+          <input id="file-record" type="file" accept=".xlsx" class="hidden"
+                 onchange="showFileName(this, 'record-label')">
+        </label>
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-2">
+          上下班打卡月报
+          <span class="text-red-500">*</span>
+        </label>
+        <label for="file-monthly"
+               class="flex flex-col items-center justify-center h-32 border-2 border-dashed border-gray-300 rounded-lg cursor-pointer hover:bg-gray-50 transition">
+          <svg class="w-8 h-8 text-gray-400 mb-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/>
+          </svg>
+          <span class="text-sm text-gray-500" id="monthly-label">点击或拖拽上传 .xlsx 文件</span>
+          <input id="file-monthly" type="file" accept=".xlsx" class="hidden"
+                 onchange="showFileName(this, 'monthly-label')">
+        </label>
+      </div>
+    </div>
+
+    <button onclick="generate()"
+            class="w-full bg-blue-600 text-white py-3 rounded-lg font-medium hover:bg-blue-700 transition disabled:opacity-50"
+            id="btn-generate">
+      生成考勤表
+    </button>
+    <p id="error-msg" class="text-red-500 text-sm mt-2 hidden"></p>
+  </div>
+
+  <!-- 加载中 -->
+  <div id="loading" class="text-center py-12 hidden">
+    <div class="inline-block animate-spin rounded-full h-10 w-10 border-4 border-blue-200 border-t-blue-600"></div>
+    <p class="mt-3 text-gray-500">正在处理...</p>
+  </div>
+
+  <!-- 结果区域 -->
+  <div id="result-section" class="hidden">
+    <!-- 统计卡片 -->
+    <div class="grid grid-cols-4 gap-4 mb-4" id="stats-cards"></div>
+
+    <!-- 操作栏 -->
+    <div class="bg-white rounded-lg shadow p-3 mb-4 flex items-center justify-between">
+      <span class="text-sm text-gray-600" id="result-info"></span>
+      <div class="flex gap-2">
+        <button onclick="goBack()"
+                class="bg-gray-500 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-gray-600 transition">
+          返回首页
+        </button>
+        <button onclick="downloadExcel()"
+                class="bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-green-700 transition">
+          下载 Excel
+        </button>
+      </div>
+    </div>
+
+    <!-- 表格容器 -->
+    <div class="bg-white rounded-lg shadow overflow-auto" style="max-height: 65vh;">
+        <table class="result-table" id="result-table">
+          <thead id="table-head"></thead>
+          <tbody id="table-body"></tbody>
+        </table>
+    </div>
+
+    <!-- 异常日历 -->
+    <div class="bg-white rounded-lg shadow p-4 mt-4">
+      <h3 class="text-sm font-medium text-gray-700 mb-3">每日异常分布</h3>
+      <div class="flex gap-1 flex-wrap" id="abnormal-calendar"></div>
+    </div>
+  </div>
+
+</main>
+
+<script>
+let sessionId = null;
+
+function showFileName(input, labelId) {
+  const file = input.files[0];
+  const label = document.getElementById(labelId);
+  if (file) {
+    label.textContent = file.name;
+    label.className = 'text-sm text-blue-600 font-medium';
+  }
+}
+
+async function generate() {
+  const recordFile = document.getElementById('file-record').files[0];
+  const monthlyFile = document.getElementById('file-monthly').files[0];
+  const errorEl = document.getElementById('error-msg');
+
+  errorEl.classList.add('hidden');
+  if (!recordFile || !monthlyFile) {
+    errorEl.textContent = '请上传两个文件';
+    errorEl.classList.remove('hidden');
+    return;
+  }
+
+  document.getElementById('loading').classList.remove('hidden');
+  document.getElementById('result-section').classList.add('hidden');
+  document.getElementById('btn-generate').disabled = true;
+
+  const form = new FormData();
+  form.append('record', recordFile);
+  form.append('monthly', monthlyFile);
+
+  try {
+    const resp = await fetch('/api/upload', { method: 'POST', body: form });
+    if (!resp.ok) {
+      const err = await resp.json();
+      throw new Error(err.detail || '处理失败');
+    }
+    const data = await resp.json();
+    sessionId = data.session_id;
+    renderResult(data);
+  } catch (e) {
+    errorEl.textContent = e.message;
+    errorEl.classList.remove('hidden');
+  } finally {
+    document.getElementById('loading').classList.add('hidden');
+    document.getElementById('btn-generate').disabled = false;
+  }
+}
+
+function renderResult(data) {
+  document.getElementById('result-section').classList.remove('hidden');
+  document.getElementById('upload-section').classList.add('hidden');
+
+  const s = data.summary;
+  document.getElementById('stats-cards').innerHTML = `
+    <div class="bg-white rounded-lg shadow p-4 text-center">
+      <div class="text-2xl font-bold text-blue-600">${s.person_count}</div>
+      <div class="text-xs text-gray-500 mt-1">总人数</div>
+    </div>
+    <div class="bg-white rounded-lg shadow p-4 text-center">
+      <div class="text-2xl font-bold text-red-500">${s.total_late}</div>
+      <div class="text-xs text-gray-500 mt-1">迟到总次数</div>
+    </div>
+    <div class="bg-white rounded-lg shadow p-4 text-center">
+      <div class="text-2xl font-bold text-orange-500">${s.total_miss}</div>
+      <div class="text-xs text-gray-500 mt-1">缺卡总次数</div>
+    </div>
+    <div class="bg-white rounded-lg shadow p-4 text-center">
+      <div class="text-2xl font-bold text-yellow-600">${s.total_leave}</div>
+      <div class="text-xs text-gray-500 mt-1">事假总天数</div>
+    </div>`;
+
+  document.getElementById('result-info').textContent =
+    `${s.person_count} 人，当月休息 ${data.month_rest_days} 天`;
+
+  // Render table
+  const weekdays = data.weekdays;
+  let thead = '<tr><th class="sticky-col">序号</th><th class="sticky-col">姓名</th><th class="sticky-col">账号</th>';
+  const numDays = data.num_days || 30;
+  for (let d = 1; d <= numDays; d++) {
+    const wd = weekdays[d-1] || '';
+    thead += `<th>${d}<br>${wd}</th>`;
+  }
+  thead += '<th>出勤</th><th>休息</th><th>事假</th><th>迟到/缺卡</th><th>缺卡</th><th>备注</th></tr>';
+  document.getElementById('table-head').innerHTML = thead;
+
+  let tbody = '';
+  data.persons.forEach((p, i) => {
+    tbody += `<tr><td class="sticky-col">${i+1}</td><td class="sticky-col">${p.name}</td><td class="sticky-col">${p.account}</td>`;
+    for (let d = 0; d < numDays; d++) {
+      const s = (p.daily_statuses && p.daily_statuses[d]) || '';
+      let cls = '';
+      if (s === '≦') cls = 'cell-late';
+      else if (s === '缺卡') cls = 'cell-miss';
+      else if (s === '×' || s === '△') cls = 'cell-leave';
+      else if (s === '√') cls = 'cell-normal';
+      tbody += `<td class="${cls}">${s}</td>`;
+    }
+    tbody += `<td>${p.actual_attendance}</td><td>${p.rest_days}</td><td>${p.leave_days}</td>`;
+    tbody += `<td>${p.late || ''}</td><td>${p.miss_punch || ''}</td><td class="text-left text-xs">${p.remarks || ''}</td></tr>`;
+  });
+  document.getElementById('table-body').innerHTML = tbody;
+
+  // Abnormal calendar
+  let cal = '';
+  data.daily_abnormal.forEach(d => {
+    const hasAbnormal = d.late > 0 || d.miss > 0;
+    const bg = hasAbnormal ? 'bg-red-100 border-red-300' : 'bg-gray-50 border-gray-200';
+    cal += `<div class="border rounded p-1 text-center text-xs ${bg}" style="width:30px" title="第${d.day}天: 迟到${d.late} 缺卡${d.miss}">
+      <div>${d.day}</div>`;
+    if (d.late > 0) cal += `<div class="text-red-500">迟${d.late}</div>`;
+    if (d.miss > 0) cal += `<div class="text-orange-500">卡${d.miss}</div>`;
+    cal += `</div>`;
+  });
+  document.getElementById('abnormal-calendar').innerHTML = cal;
+}
+
+function goBack() {
+  document.getElementById('result-section').classList.add('hidden');
+  document.getElementById('upload-section').classList.remove('hidden');
+  document.getElementById('table-body').innerHTML = '';
+  document.getElementById('table-head').innerHTML = '';
+  sessionId = null;
+}
+
+function downloadExcel() {
+  if (sessionId) {
+    window.open(`/api/download/${sessionId}`, '_blank');
+  }
+}
+</script>
+</body>
+</html>
